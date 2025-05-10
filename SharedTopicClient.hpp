@@ -73,7 +73,7 @@ class SharedTopicClient : public LibXR::Application {
     }
 
     tx_thread_.Create(this, TxThreadFun, "SharedTopicClientTxThread",
-                      task_stack_depth, LibXR::Thread::Priority::MEDIUM);
+                      task_stack_depth, LibXR::Thread::Priority::REALTIME);
 
     app.Register(*this);
   }
