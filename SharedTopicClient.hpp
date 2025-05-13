@@ -62,7 +62,7 @@ class SharedTopicClient : public LibXR::Application {
             info.client->tx_sem_.PostFromCallback(in_isr);
           };
 
-      auto msg_cb = LibXR::Callback<LibXR::RawData &>::Create(
+      auto msg_cb = LibXR::Topic::Callback::Create(
           func, CallbackInfo{this, ans->data_.crc32, i});
 
       LibXR::Topic topic(ans);
