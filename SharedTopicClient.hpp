@@ -1,8 +1,7 @@
 #pragma once
 
 // clang-format off
-/* === MODULE MANIFEST ===
-module_name: SharedTopicClient
+/* === MODULE MANIFEST V2 ===
 module_description: No description provided
 constructor_args:
   - uart_name: "uart_cdc"
@@ -11,7 +10,9 @@ constructor_args:
   - topic_names:
     - "topic1"
     - "topic2"
+template_args: []
 required_hardware: uart_name
+depends: []
 === END MANIFEST === */
 // clang-format on
 
@@ -89,7 +90,7 @@ class SharedTopicClient : public LibXR::Application {
       if (size > 0 && client->tx_queue_.PopBatch(
                           static_cast<uint8_t *>(client->tx_buffer_.addr_),
                           size) == ErrorCode::OK) {
-        client->uart_->write_port_(
+        client->uart_->Write(
             {static_cast<uint8_t *>(client->tx_buffer_.addr_), size}, op_none);
       }
     }

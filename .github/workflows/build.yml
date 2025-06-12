@@ -1,0 +1,122 @@
+name: XRobot Module Build Test
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 3 1 * *'  # 每月1日凌晨3点（UTC）自动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/xrobot-org/docker-image-linux:main
+      options: --user 0
+
+    env:
+      XR_MODULE_NAME: ${{ github.event.repository.name }}
+
+    steps:
+      - name: Checkout current module repo to ./Modules/${{ env.XR_MODULE_NAME }}
+        uses: actions/checkout@v4
+        with:
+          path: Modules/${{ env.XR_MODULE_NAME }}
+
+      - name: Create main.cpp
+        run: |
+          cat > main.cpp <<'EOF'
+          #include <iostream>
+          #include "xrobot_main.hpp"
+          #include "libxr.hpp"
+
+          int main() {
+              LibXR::PlatformInit();
+              LibXR::STDIO::Printf("This is XRobot Module Template Test\n");
+              LibXR::HardwareContainer hw;
+              XRobotMain(hw);
+              return 0;
+          }
+          EOF
+
+      - name: Create minimal CMakeLists.txt
+        run: |
+          cat > CMakeLists.txt <<'EOF'
+          project(xrobot_mod_test CXX)
+          set(CMAKE_CXX_STANDARD 17)
+          add_executable(xr_test main.cpp)
+          add_subdirectory(libxr)
+          target_include_directories(xr_test PUBLIC $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES> ${CMAKE_SOURCE_DIR}/User)
+          target_link_libraries(xr_test PUBLIC xr)
+          include(Modules/CMakeLists.txt)
+          EOF
+
+      - name: Pull libxr to ./libxr
+        run: git clone --depth=1 https://github.com/Jiu-xiao/libxr ./libxr
+
+      - name: Setup Python & Install deps
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install pyyaml requests
+
+      - name: Add XRobot tools to PATH
+        run: |
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install xrobot toolchain (assumes pyproject/tar.gz/pip install .)
+        run: |
+          pip3 install xrobot libxr
+
+      - name: Run xrobot_setup
+        run: |
+          xrobot_setup || true
+
+      - name: Run xrobot_init_mod
+        run: |
+          xrobot_init_mod
+
+      - name: Add BlinkLED module
+        run: |
+          xrobot_add_mod BlinkLED --instance-id BlinkLED_0
+
+      - name: Add this repo module
+        run: |
+          xrobot_add_mod ${{ env.XR_MODULE_NAME }} && cat User/xrobot.yaml
+
+      - name: Generate main again
+        run: |
+          xrobot_setup
+
+      - name: Build
+        run: |
+          mkdir -p build
+          cd build
+          cmake ..
+          make
+
+      - name: Create Tag via GitHub API
+        if: ${{ success() && github.event_name != 'pull_request' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tagPrefix = 'auto-'
+            const date = new Date();
+            const yyyy = date.getUTCFullYear();
+            const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+            const dd = String(date.getUTCDate()).padStart(2, '0');
+            const HH = String(date.getUTCHours()).padStart(2, '0');
+            const MM = String(date.getUTCMinutes()).padStart(2, '0');
+            const SS = String(date.getUTCSeconds()).padStart(2, '0');
+            const tagName = `${tagPrefix}${yyyy}${mm}${dd}-${HH}${MM}${SS}`;
+
+            // 获取当前 commit sha
+            const sha = process.env.GITHUB_SHA;
+
+            // 创建 tag reference
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/tags/${tagName}`,
+              sha: sha
+            });
+            console.log(`Created tag: ${tagName} on sha: ${sha}`);
