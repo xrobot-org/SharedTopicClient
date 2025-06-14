@@ -5,7 +5,7 @@
 module_description: SharedTopicClient 是一个多 Topic 数据共享与串口转发客户端模块。它用于通过 UART 将多个 Topic 的数据统一打包、发送，实现消息流的串口透明同步转发，适用于分布式系统的多主题数据同步或边缘数据采集。 / SharedTopicClient is a client module for multi-topic data sharing and transparent UART forwarding. It subscribes to multiple Topics, packs their updates, and transmits them via UART, enabling efficient and reliable message synchronization over serial connections—ideal for distributed systems or edge data acquisition.
 constructor_args:
   - uart_name: "uart_cdc"
-  - task_stack_depth: 512
+  - task_stack_depth: 2048
   - buffer_size: 256
   - topic_names:
     - "topic1"
