@@ -100,7 +100,7 @@ class SharedTopicClient : public LibXR::Application {
           LibXR::min(client->tx_queue_.Size(), client->tx_buffer_.size_);
       if (size > 0 && client->tx_queue_.PopBatch(
                           static_cast<uint8_t*>(client->tx_buffer_.addr_),
-                          size) == ErrorCode::OK) {
+                          size) == LibXR::ErrorCode::OK) {
         client->uart_->Write(
             {static_cast<uint8_t*>(client->tx_buffer_.addr_), size}, op_none);
       }
