@@ -31,7 +31,7 @@ jobs:
 
           int main() {
               LibXR::PlatformInit();
-              LibXR::STDIO::Printf("This is XRobot Module Template Test\n");
+              LibXR::STDIO::Printf<"This is XRobot Module Template Test\n">();
               LibXR::HardwareContainer hw;
               XRobotMain(hw);
               return 0;
