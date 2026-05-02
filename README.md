@@ -13,9 +13,26 @@ SharedTopicClient is a client module for multi-topic data sharing and transparen
 ## 构造参数 / Constructor Arguments
 
 - uart_name: 串口设备名 / UART device name (e.g., "uart_cdc")
-- task_stack_depth: 任务堆栈大小 / Task stack depth (e.g., 512)
-- buffer_size: 发送缓冲区字节数 / TX buffer size (e.g., 256)
-- topic_names: 需要订阅并转发的 Topic 名称列表 / List of topic names to subscribe and forward (e.g., ["topic1", "topic2"])
+- buffer_size: 单个 Topic 串口包最大字节数 / Maximum bytes of one forwarded Topic packet (e.g., 256)
+- topic_configs: 需要订阅并转发的 Topic 配置列表。每项可以只写 topic 名，也可以写
+  `[topic, domain]`。/ Topic configs to subscribe and forward. Each item may be a
+  topic name or `[topic, domain]`.
+
+## 运行方式
+
+`SharedTopicClient` 不创建发送线程。模块注册 Topic callback；每次 Topic 发布时，
+callback 内直接完成打包并把当前包写入 UART `write_port`。UART 写入仍走 libxr
+非阻塞写队列，包内容在 `Write()` 返回前已经复制到 UART 队列。
+
+## Timestamp
+
+`SharedTopicClient` 转发 Topic 时会保留 libxr message envelope timestamp：
+
+1. 本地 Topic callback 收到 `(timestamp, payload)`。
+2. `Topic::PackData(topic_crc, buffer, timestamp, payload)` 写入串口包。
+3. 对端 `SharedTopic` 解析后用同一个 timestamp 发布到对端 domain。
+
+因此同步类 topic 不需要在 payload 里重复携带时间戳；payload 只保留业务字段即可。
 
 ## 依赖 / Depends
 
