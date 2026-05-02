@@ -17,6 +17,7 @@ depends: []
 // clang-format on
 
 #include "app_framework.hpp"
+#include "message.hpp"
 #include "uart.hpp"
 
 class SharedTopicClient : public LibXR::Application {
@@ -47,7 +48,6 @@ class SharedTopicClient : public LibXR::Application {
     ASSERT(uart_ != nullptr);
 
     topics_pack_buffer_ = new LibXR::RawData[topic_configs.size()];
-
     uint32_t i = 0;
 
     for (auto config : topic_configs) {
@@ -61,12 +61,13 @@ class SharedTopicClient : public LibXR::Application {
           new uint8_t[ans->data_.max_length + LibXR::Topic::PACK_BASE_SIZE],
           ans->data_.max_length + LibXR::Topic::PACK_BASE_SIZE);
 
-      void (*func)(bool, CallbackInfo, LibXR::RawData&) =
-          [](bool in_isr, CallbackInfo info, LibXR::RawData& data) {
-            LibXR::WriteOperation op;
+      void (*func)(bool, CallbackInfo, LibXR::MicrosecondTimestamp,
+                   LibXR::ConstRawData&) =
+          [](bool in_isr, CallbackInfo info,
+             LibXR::MicrosecondTimestamp timestamp, LibXR::ConstRawData& data) {
             LibXR::Topic::PackData(info.topic_crc32,
                                    info.client->topics_pack_buffer_[info.index],
-                                   data);
+                                   timestamp, data);
             info.client->tx_queue_.PushBatch(
                 static_cast<uint8_t*>(
                     info.client->topics_pack_buffer_[info.index].addr_),
@@ -91,8 +92,6 @@ class SharedTopicClient : public LibXR::Application {
   }
 
   static void TxThreadFun(SharedTopicClient* client) {
-    LibXR::Semaphore write_op_sem;
-    LibXR::WriteOperation op(write_op_sem);
     LibXR::WriteOperation op_none;
     while (true) {
       client->tx_sem_.Wait();
