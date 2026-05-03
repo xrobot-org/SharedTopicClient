@@ -133,10 +133,15 @@ class SharedTopicClient : public LibXR::Application {
     ASSERT(packet_size <= slot.buffer.size_);
     LibXR::Topic::PackData(info.topic_crc32, slot.buffer, timestamp, data);
 
-    ASSERT(ready_packets_->Put(ReadyPacket{slot_index, packet_size}) ==
-           LibXR::ErrorCode::OK);
-    TxService(in_isr);
+    if (ready_packets_->Put(ReadyPacket{slot_index, packet_size}) !=
+        LibXR::ErrorCode::OK) {
+      ReturnFreeSlot(slot_index);
+      return;
+    }
+    KickTx(in_isr);
   }
+
+  void KickTx(bool in_isr) { tx_callback_.Run(in_isr, LibXR::ErrorCode::OK); }
 
   void TxService(bool in_isr) {
     ReadyPacket packet;
@@ -149,14 +154,17 @@ class SharedTopicClient : public LibXR::Application {
         LibXR::ConstRawData{slot.buffer.addr_, packet.packet_size}, tx_op_,
         in_isr);
     if (static_cast<int8_t>(write_status) < 0) {
-      ASSERT(ready_packets_->Put(packet) == LibXR::ErrorCode::OK);
+      ReturnFreeSlot(packet.slot_index);
       return;
     }
 
     ReturnFreeSlot(packet.slot_index);
   }
 
-  void OnWriteDone(bool in_isr, LibXR::ErrorCode) {
+  void OnWriteDone(bool in_isr, LibXR::ErrorCode status) {
+    if (static_cast<int8_t>(status) < 0) {
+      return;
+    }
     TxService(in_isr);
   }
 
