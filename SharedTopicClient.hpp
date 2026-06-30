@@ -19,16 +19,15 @@ depends: []
 #include <cstdint>
 
 #include "app_framework.hpp"
-#include "lockfree_pool.hpp"
-#include "lockfree_queue.hpp"
 #include "message.hpp"
+#include "queue.hpp"
 #include "uart.hpp"
 
 class SharedTopicClient : public LibXR::Application {
  private:
   struct CallbackInfo {
     SharedTopicClient* client;
-    uint32_t topic_crc32;
+    LibXR::Topic::TopicHandle topic;
   };
 
   struct PacketSlot {
@@ -72,15 +71,15 @@ class SharedTopicClient : public LibXR::Application {
         ASSERT(false);
       }
       const size_t packet_size =
-          topic->data_.max_length + LibXR::Topic::PACK_BASE_SIZE;
+          LibXR::Topic(topic).PayloadSize() + LibXR::Topic::PACK_BASE_SIZE;
       max_packet_size = LibXR::max(max_packet_size, packet_size);
     }
 
     ASSERT(max_packet_size <= uart_->write_port_->queue_data_->MaxSize());
 
     packets_ = new PacketSlot[slot_count];
-    free_slots_ = new LibXR::LockFreeQueue<uint32_t>(slot_count + 1);
-    ready_packets_ = new LibXR::LockFreePool<ReadyPacket>(slot_count);
+    free_slots_ = new LibXR::MPMCQueue<uint32_t>(slot_count + 1);
+    ready_packets_ = new LibXR::MPMCQueue<ReadyPacket>(slot_count + 1);
     for (uint32_t i = 0; i < slot_count; i++) {
       packets_[i].buffer =
           LibXR::RawData(new uint8_t[max_packet_size], max_packet_size);
@@ -99,14 +98,15 @@ class SharedTopicClient : public LibXR::Application {
       auto topic_handle = LibXR::Topic::Find(config.name, &domain);
       ASSERT(topic_handle != nullptr);
       void (*func)(bool, CallbackInfo, LibXR::MicrosecondTimestamp,
-                   LibXR::ConstRawData&) =
+                   const LibXR::ConstRawData&) =
           [](bool in_isr, CallbackInfo info,
-             LibXR::MicrosecondTimestamp timestamp, LibXR::ConstRawData& data) {
+             LibXR::MicrosecondTimestamp timestamp,
+             const LibXR::ConstRawData& data) {
             info.client->OnTopic(in_isr, info, timestamp, data);
           };
 
-      auto msg_cb = LibXR::Topic::Callback::Create(
-          func, CallbackInfo{this, topic_handle->data_.crc32});
+      auto msg_cb =
+          LibXR::Topic::Callback::Create(func, CallbackInfo{this, topic_handle});
 
       LibXR::Topic topic(topic_handle);
 
@@ -121,7 +121,7 @@ class SharedTopicClient : public LibXR::Application {
  private:
   void OnTopic(bool in_isr, CallbackInfo info,
                LibXR::MicrosecondTimestamp timestamp,
-               LibXR::ConstRawData& data) {
+               const LibXR::ConstRawData& data) {
     const size_t packet_size = data.size_ + LibXR::Topic::PACK_BASE_SIZE;
     uint32_t slot_index = 0;
 
@@ -131,9 +131,10 @@ class SharedTopicClient : public LibXR::Application {
 
     auto& slot = packets_[slot_index];
     ASSERT(packet_size <= slot.buffer.size_);
-    LibXR::Topic::PackData(info.topic_crc32, slot.buffer, timestamp, data);
+    auto topic = LibXR::Topic(info.topic);
+    ASSERT(topic.PackRaw(data, slot.buffer, timestamp) == LibXR::ErrorCode::OK);
 
-    if (ready_packets_->Put(ReadyPacket{slot_index, packet_size}) !=
+    if (ready_packets_->Push(ReadyPacket{slot_index, packet_size}) !=
         LibXR::ErrorCode::OK) {
       ReturnFreeSlot(slot_index);
       return;
@@ -145,7 +146,7 @@ class SharedTopicClient : public LibXR::Application {
 
   void TxService(bool in_isr) {
     ReadyPacket packet;
-    if (ready_packets_->Get(packet) != LibXR::ErrorCode::OK) {
+    if (ready_packets_->Pop(packet) != LibXR::ErrorCode::OK) {
       return;
     }
 
@@ -174,8 +175,8 @@ class SharedTopicClient : public LibXR::Application {
 
   LibXR::UART* uart_;
   PacketSlot* packets_ = nullptr;
-  LibXR::LockFreeQueue<uint32_t>* free_slots_ = nullptr;
-  LibXR::LockFreePool<ReadyPacket>* ready_packets_ = nullptr;
+  LibXR::MPMCQueue<uint32_t>* free_slots_ = nullptr;
+  LibXR::MPMCQueue<ReadyPacket>* ready_packets_ = nullptr;
   LibXR::Callback<LibXR::ErrorCode> tx_callback_;
   LibXR::WriteOperation tx_op_;
 };
