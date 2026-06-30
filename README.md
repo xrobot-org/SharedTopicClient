@@ -23,25 +23,25 @@ SharedTopicClient is a client module for multi-topic data sharing and transparen
 
 `SharedTopicClient` 不创建发送线程。模块注册 Topic callback；每次 Topic 发布时，
 callback 先从空槽位队列申请一个 packet 槽，完成打包后把 `{槽位, 长度}` 放入待发
-pool，然后尝试交给 UART `WritePort`：
+队列，然后尝试交给 UART `WritePort`：
 
 - 所有 Topic 共用同一组固定 packet 槽位。
-- 空槽位用 `LockFreeQueue<uint32_t>` 管理；TX 消费完成后把槽位还回队列。
-- 待发 packet 用 `LockFreePool` 管理；message callback 打包完成后放入 pool。
-- packet 总数、空槽队列深度、待发 pool 深度相同。
+- 空槽位用 `MPMCQueue<uint32_t>` 管理；TX 消费完成后把槽位还回队列。
+- 待发 packet 用 `MPMCQueue<ReadyPacket>` 管理；message callback 打包完成后按 FIFO 放入队列。
+- packet 总数由 `slot_count` 决定；队列容量比 slot 数多 1，以适配 libxr MPMC 队列的容量约束。
 - 空槽申请失败时丢弃当前新 packet；这是全局背压，不是同 Topic 覆盖。
 
 `TxService()` 每次只尝试交付一个待发 packet，不单独维护发送锁；并发提交与写队列容量
 由 libxr `WritePort` 负责。如果 `WritePort` 暂时忙或写队列已满，当前待发 packet
-会放回待发 pool，等待写完成回调或下一次 Topic callback 再推进。这样不会为转发链路
-额外引入发送线程，也不会重复实现 `WritePort` 已经具备的互斥语义。
+会丢弃并释放当前 packet 槽，等待写完成回调或下一次 Topic callback 再推进。这样不会为
+转发链路额外引入发送线程，也不会重复实现 `WritePort` 已经具备的互斥语义。
 
 ## Timestamp
 
 `SharedTopicClient` 转发 Topic 时会保留 libxr message envelope timestamp：
 
 1. 本地 Topic callback 收到 `(timestamp, payload)`。
-2. `Topic::PackData(topic_crc, buffer, timestamp, payload)` 写入串口包。
+2. `Topic(topic_handle).PackRaw(payload, buffer, timestamp)` 写入串口包。
 3. 对端 `SharedTopic` 解析后用同一个 timestamp 发布到对端 domain。
 
 因此同步类 topic 不需要在 payload 里重复携带时间戳；payload 只保留业务字段即可。
