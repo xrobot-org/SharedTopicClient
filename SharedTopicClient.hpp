@@ -19,7 +19,6 @@ depends: []
 #include <cstdint>
 
 #include "app_framework.hpp"
-#include "lockfree_pool.hpp"
 #include "message.hpp"
 #include "queue.hpp"
 #include "uart.hpp"
@@ -78,9 +77,11 @@ class SharedTopicClient : public LibXR::Application {
 
     ASSERT(max_packet_size <= uart_->write_port_->queue_data_->MaxSize());
 
+    const size_t queue_capacity =
+        LibXR::max(static_cast<size_t>(slot_count), size_t{2});
     packets_ = new PacketSlot[slot_count];
-    free_slots_ = new LibXR::MPMCQueue<uint32_t>(slot_count + 1);
-    ready_packets_ = new LibXR::LockFreePool<ReadyPacket>(slot_count);
+    free_slots_ = new LibXR::MPMCQueue<uint32_t>(queue_capacity);
+    ready_packets_ = new LibXR::MPMCQueue<ReadyPacket>(queue_capacity);
     for (uint32_t i = 0; i < slot_count; i++) {
       packets_[i].buffer =
           LibXR::RawData(new uint8_t[max_packet_size], max_packet_size);
@@ -136,7 +137,7 @@ class SharedTopicClient : public LibXR::Application {
       return;
     }
 
-    if (ready_packets_->Put(ReadyPacket{slot_index, packet_size}) !=
+    if (ready_packets_->Push(ReadyPacket{slot_index, packet_size}) !=
         LibXR::ErrorCode::OK) {
       ReturnFreeSlot(slot_index);
       return;
@@ -148,7 +149,7 @@ class SharedTopicClient : public LibXR::Application {
 
   void TxService(bool in_isr) {
     ReadyPacket packet;
-    if (ready_packets_->Get(packet) != LibXR::ErrorCode::OK) {
+    if (ready_packets_->Pop(packet) != LibXR::ErrorCode::OK) {
       return;
     }
 
@@ -178,7 +179,7 @@ class SharedTopicClient : public LibXR::Application {
   LibXR::UART* uart_;
   PacketSlot* packets_ = nullptr;
   LibXR::MPMCQueue<uint32_t>* free_slots_ = nullptr;
-  LibXR::LockFreePool<ReadyPacket>* ready_packets_ = nullptr;
+  LibXR::MPMCQueue<ReadyPacket>* ready_packets_ = nullptr;
   LibXR::Callback<LibXR::ErrorCode> tx_callback_;
   LibXR::WriteOperation tx_op_;
 };
