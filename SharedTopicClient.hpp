@@ -56,7 +56,6 @@ class SharedTopicClient : public LibXR::Application {
                     std::initializer_list<TopicConfig> topic_configs)
       : uart_(hw.template FindOrExit<LibXR::UART>({uart_name})) {
     ASSERT(uart_->write_port_ != nullptr);
-    ASSERT(uart_->write_port_->queue_data_ != nullptr);
     ASSERT(uart_->write_port_->Writable());
     ASSERT(topic_configs.size() > 0);
     ASSERT(slot_count > 0);
@@ -75,7 +74,7 @@ class SharedTopicClient : public LibXR::Application {
       max_packet_size = LibXR::max(max_packet_size, packet_size);
     }
 
-    ASSERT(max_packet_size <= uart_->write_port_->queue_data_->MaxSize());
+    ASSERT(max_packet_size <= uart_->write_port_->Capacity());
 
     const size_t queue_capacity =
         LibXR::max(static_cast<size_t>(slot_count), size_t{2});
