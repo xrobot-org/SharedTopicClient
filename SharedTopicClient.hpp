@@ -52,9 +52,11 @@ class SharedTopicClient
     TopicConfig(const char* name, const char* domain) : name(name), domain(domain) {}
   };
 
-  SharedTopicClient(LibXR::UART& external_uart_name, uint32_t slot_count,
-                    std::initializer_list<TopicConfig> topic_configs)
-      : uart_(std::addressof(external_uart_name))
+  SharedTopicClient(
+      LibXR::UART& uart,
+      uint32_t slot_count = 16,
+      std::initializer_list<TopicConfig> topic_configs = {"topic1", {"topic2", "libxr_def_domain"}})
+      : uart_(std::addressof(uart))
   {
     ASSERT(uart_->write_port_ != nullptr);
     ASSERT(uart_->write_port_->Writable());
