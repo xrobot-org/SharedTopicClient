@@ -113,8 +113,6 @@ class SharedTopicClient
     }
   }
 
-  void OnMonitor() {}
-
  private:
   void OnTopic(bool in_isr, CallbackInfo info,
                const LibXR::Topic::RawMessageView& message)
