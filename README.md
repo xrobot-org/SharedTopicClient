@@ -1,64 +1,127 @@
 # SharedTopicClient
 
-## Static assembly source line
+SharedTopicClient 是一个多 Topic 数据共享与串口转发客户端模块。它订阅多个 Topic，
+把每次发布打包后通过 UART 发送，对端用 `SharedTopic` 解析并发布到对端 domain，
+适用于分布式系统的多主题数据同步或边缘数据采集。
 
-This source line uses explicit C++ constructor dependencies and ordered instance
-arguments. Inspect the current primary header with `xrobot_mod_parser --path .`;
-its declarations, not old manifest/config examples, define the interface.
-Historical HardwareContainer/ApplicationManager examples below apply only to the
-older dynamic source tags. Device/protocol descriptions remain relevant.
-See the XRobot [migration guide](https://github.com/xrobot-org/XRobot/blob/dev/MIGRATION.md).
-Compilation is not hardware validation; retain version-specific board evidence.
+SharedTopicClient is a client module for multi-topic data sharing and UART
+forwarding. It subscribes to several Topics, packs every publication and sends it
+over a UART; the peer parses the stream with `SharedTopic` and publishes it in its
+own domain. Useful for multi-topic synchronization in distributed systems or edge
+data acquisition.
 
+## 运行方式 / Behaviour
 
-SharedTopicClient 是一个多 Topic 数据共享与串口转发客户端模块。它用于通过 UART 将多个 Topic 的数据统一打包、发送，实现消息流的串口透明同步转发，适用于分布式系统的多主题数据同步或边缘数据采集。
+- 构造时在给定 domain 中查找每个 Topic（必须已经存在，否则打印 `Topic not found`
+  并触发 `ASSERT`），并为其注册 Topic callback。UART 必须有可写的 write port，且最大的
+  打包后长度（payload + `Topic::PACK_BASE_SIZE`）不能超过 write port 容量。
+- 模块不创建发送线程。所有 Topic 共用 `slot_count` 个固定 packet 槽位，每个槽位的
+  字节数取订阅 Topic 中最大的打包后长度。空槽位和待发 packet 各用一个
+  `MPMCQueue` 管理；`slot_count = 1` 时队列仍按最小容量 2 构造，但不增加槽位。
+- Topic 发布时，callback 申请一个空槽位，用 `Topic::PackRaw()` 打包 payload 和
+  envelope timestamp，放入待发队列，然后推进发送。申请不到空槽位时丢弃这条新数据
+  （全局背压，不是同 Topic 覆盖）。
+- 每次推进只把一个待发 packet 交给 UART `WritePort`，数据拷入写队列后立即归还槽位。
+  `WritePort` 忙或写队列满时丢弃该 packet 并归还槽位，不在回调链中重试；之后的写完成
+  回调或 Topic callback 会继续推进队列。发送并发与互斥由 LibXR `WritePort` 负责。
 
-SharedTopicClient is a client module for multi-topic data sharing and transparent UART forwarding. It subscribes to multiple Topics, packs their updates, and transmits them via UART, enabling efficient and reliable message synchronization over serial connections—ideal for distributed systems or edge data acquisition.
+- The constructor looks up every Topic in its domain (it must already exist;
+  otherwise it logs `Topic not found` and fails an `ASSERT`) and registers a Topic
+  callback on it. The UART must have a writable write port, and the largest packed
+  size (payload + `Topic::PACK_BASE_SIZE`) must fit into the write port capacity.
+- No TX thread is created. All Topics share `slot_count` fixed packet slots, each
+  sized for the largest packed subscribed Topic. Free slots and ready packets are
+  kept in two `MPMCQueue`s; with `slot_count = 1` the queues are still built with the
+  minimum capacity 2, without adding slots.
+- On each publication the callback takes a free slot, packs payload and envelope
+  timestamp with `Topic::PackRaw()`, pushes it to the ready queue and kicks TX. If no
+  slot is free the new packet is dropped (global back-pressure, not per-Topic
+  overwrite).
+- Each kick hands one ready packet to the UART `WritePort`; the slot is returned as
+  soon as the data is copied into the write queue. If the `WritePort` is busy or its
+  queue is full, the packet is dropped and its slot returned, without retrying in
+  the callback chain; the next write-done callback or Topic callback advances the
+  queue. Concurrency and mutual exclusion of writes are left to the LibXR
+  `WritePort`.
 
----
+## 时间戳 / Timestamp
 
-## 硬件需求 / Required Hardware
+转发时保留 LibXR message envelope timestamp：本地 callback 收到 `(timestamp, payload)`，
+`Topic::PackRaw(payload, buffer, timestamp)` 把它写入串口包，对端 `SharedTopic`
+解析后用同一个 timestamp 发布。因此同步类 Topic 不需要在 payload 里重复携带时间戳。
 
-- uart_name
+The LibXR envelope timestamp is preserved: the local callback receives
+`(timestamp, payload)`, `Topic::PackRaw(payload, buffer, timestamp)` writes it into
+the packet, and the peer `SharedTopic` publishes with the same timestamp. Payloads
+of synchronized Topics therefore do not need their own timestamp field.
 
-## 构造参数 / Constructor Arguments
+## 依赖 / Dependencies
 
-- uart_name: 串口设备名 / UART device name (e.g., "uart_cdc")
-- slot_count: 共享待发槽位数量。每个槽位的字节数由订阅 Topic 中最大的打包后长度自动计算。
-  / Number of shared pending slots. Each slot size is derived from the largest packed subscribed Topic.
-- topic_configs: 需要订阅并转发的 Topic 配置列表。每项可以只写 topic 名，也可以写
-  `[topic, domain]`。/ Topic configs to subscribe and forward. Each item may be a
-  topic name or `[topic, domain]`.
+无其他模块依赖，仅使用 LibXR。
+No other Modules; LibXR only.
 
-## 运行方式
+## 构造接口 / Constructor
 
-`SharedTopicClient` 不创建发送线程。模块注册 Topic callback；每次 Topic 发布时，
-callback 先从空槽位队列申请一个 packet 槽，完成打包后把 `{槽位, 长度}` 放入待发
-队列，然后尝试交给 UART `WritePort`：
+```cpp
+SharedTopicClient(LibXR::UART& uart,
+                  uint32_t slot_count = 16,
+                  std::initializer_list<TopicConfig> topic_configs = {"topic1", {"topic2", "libxr_def_domain"}});
+```
 
-- 所有 Topic 共用同一组固定 packet 槽位。
-- 空槽位用 `MPMCQueue<uint32_t>` 管理；TX 消费完成后把槽位还回队列。
-- 待发 packet 用 `MPMCQueue<ReadyPacket>` 管理；message callback 打包完成后放入队列。
-- 可用 packet 总数由 `slot_count` 固定；`slot_count=1` 时内部队列仍按最小合法容量 2 构造，
-  但不会增加 packet 槽位。
-- 空槽申请失败时丢弃当前新 packet；这是全局背压，不是同 Topic 覆盖。
+依赖 / Dependencies:
 
-`TxService()` 每次只尝试交付一个待发 packet，不单独维护发送锁；并发提交与写队列容量
-由 libxr `WritePort` 负责。如果 `WritePort` 暂时忙或写队列已满，当前待发 packet
-会被丢弃并立即归还槽位，不在回调链中递归重试；后续写完成回调或 Topic callback
-会继续推进队列。这样不会为转发链路
-额外引入发送线程，也不会重复实现 `WritePort` 已经具备的互斥语义。
+- `uart`：发送数据的 `LibXR::UART`。/ The `LibXR::UART` the packets are sent on.
 
-## Timestamp
+配置 / Configuration:
 
-`SharedTopicClient` 转发 Topic 时会保留 libxr message envelope timestamp：
+- `slot_count`：共享待发槽位数量，> 0，默认 16。/ Number of shared pending slots,
+  > 0, default 16.
+- `topic_configs`：需要订阅并转发的 Topic 列表，至少一项。每项可以只写 Topic 名
+  （使用 `libxr_def_domain`），也可以写 `{topic, domain}`。默认值 `topic1` / `topic2`
+  只是占位，应改为实际的 Topic。/ Topics to subscribe and forward, at least one.
+  Each item is a Topic name (domain `libxr_def_domain`) or `{topic, domain}`. The
+  defaults `topic1` / `topic2` are placeholders; replace them with real Topics.
 
-1. 本地 Topic callback 收到 `(timestamp, payload)`。
-2. `Topic::PackData(topic_crc, buffer, timestamp, payload)` 写入串口包。
-3. 对端 `SharedTopic` 解析后用同一个 timestamp 发布到对端 domain。
+## 使用 / Use
 
-因此同步类 topic 不需要在 payload 里重复携带时间戳；payload 只保留业务字段即可。
+```sh
+xrobot module add xrobot-org/SharedTopicClient
+xrobot setup
+xrobot instance add xrobot-org/SharedTopicClient
+```
 
-## 依赖 / Depends
+`xrobot instance add` 在 `User/xrobot.yaml` 中写入一个实例，依赖项留空，默认值按源码写出；
+把 `uart` 填为 BSP 中用 `XR_REGISTER` 注册的 UART 对象名：
+`xrobot instance add` writes an instance to `User/xrobot.yaml` with empty
+dependencies and the source defaults; set `uart` to the name of a UART object the
+BSP registers with `XR_REGISTER`:
 
-- 无（No dependencies）
+```yaml
+modules:
+  - module: xrobot-org/SharedTopicClient
+    id: sharedtopicclient_0
+    args:
+      - uart: uart_cdc
+      - slot_count: '16'
+      - topic_configs: '{"topic1", {"topic2", "libxr_def_domain"}}'
+```
+
+BSP 侧 / BSP side:
+
+```cpp
+XR_REGISTER(uart_cdc, LibXR::UART);
+```
+
+被转发的 Topic 必须在本实例构造前创建：创建它们的模块实例应在 `modules:` 中排在前面
+（或由 BSP 创建）。
+The forwarded Topics must exist before this instance is constructed: list the
+instances that create them earlier in `modules:` (or create them in the BSP).
+
+填好后再次运行 `xrobot setup`，生成 `User/xrobot_main.hpp`。
+Run `xrobot setup` again to generate `User/xrobot_main.hpp`.
+
+`xrobot module show .`（在本仓库中）或 `xrobot module show Modules/xrobot-org/SharedTopicClient`
+（在 BSP 中）打印 manifest 和当前的构造函数。
+`xrobot module show .` in this repository, or
+`xrobot module show Modules/xrobot-org/SharedTopicClient` in a BSP, prints the
+manifest and the current constructor.
