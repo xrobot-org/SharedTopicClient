@@ -39,7 +39,7 @@ SharedTopicClient(LibXR::UART& uart,
 配置参数：
 
 - `slot_count`：共享的待发槽位数量，大于 0，默认 16。
-- `topic_configs`：需要订阅并转发的 Topic 列表，至少一项。每项是 Topic 名（domain 为 `libxr_def_domain`），或 `{topic, domain}`。默认值 `topic1` 与 `topic2` 是占位名称，按实际 Topic 填写。被转发的 Topic 须在本实例构造前创建，创建它们的模块实例在 `modules:` 中排在本实例之前，或由 BSP 创建。
+- `topic_configs`：需要订阅并转发的 Topic 列表，至少一项。每项是 Topic 名（domain 为 `libxr_def_domain`），或 `{topic, domain}`。默认值列出两个 Topic，`topic1` 与 `topic2`，均在 domain `libxr_def_domain` 中。被转发的 Topic 须在本实例构造前创建，创建它们的模块实例在 `modules:` 中排在本实例之前，或由 BSP 创建。
 
 Dependencies:
 
@@ -48,7 +48,7 @@ Dependencies:
 Configuration parameters:
 
 - `slot_count`: number of shared pending slots, greater than 0, default 16.
-- `topic_configs`: list of Topics to subscribe to and forward, at least one item. Each item is a Topic name (domain `libxr_def_domain`) or `{topic, domain}`. The defaults `topic1` and `topic2` are placeholder names to be replaced with the actual Topics. The forwarded Topics must be created before this instance is constructed: the instances that create them are listed before this one in `modules:`, or they are created by the BSP.
+- `topic_configs`: list of Topics to subscribe to and forward, at least one item. Each item is a Topic name (domain `libxr_def_domain`) or `{topic, domain}`. The default lists two Topics, `topic1` and `topic2`, both in the domain `libxr_def_domain`. The forwarded Topics must be created before this instance is constructed: the instances that create them are listed before this one in `modules:`, or they are created by the BSP.
 
 ## 4. Topic
 
