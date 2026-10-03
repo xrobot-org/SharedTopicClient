@@ -86,10 +86,9 @@ class SharedTopicClient
    *                      Topics to subscribe to and forward, at least one; they must
    *                      already exist.
    */
-  SharedTopicClient(
-      LibXR::UART& uart,
-      uint32_t slot_count = 16,
-      std::initializer_list<TopicConfig> topic_configs = {"topic1", {"topic2", "libxr_def_domain"}})
+  SharedTopicClient(LibXR::UART& uart, uint32_t slot_count = 16,
+                    std::initializer_list<TopicConfig> topic_configs =
+                        {"topic1", {"topic2", "libxr_def_domain"}})
       : uart_(std::addressof(uart))
   {
     ASSERT(uart_->write_port_ != nullptr);
