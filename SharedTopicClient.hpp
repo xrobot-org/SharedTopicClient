@@ -16,6 +16,11 @@ depends: []
 #include "queue.hpp"
 #include "uart.hpp"
 
+/**
+ * @brief 订阅多个 Topic，把每次发布打包后通过 UART 转发。
+ *        Subscribes to several Topics, packs every publication and forwards it over a
+ *        UART.
+ */
 class SharedTopicClient
 {
  private:
@@ -37,16 +42,50 @@ class SharedTopicClient
   };
 
  public:
+  /**
+   * @brief 需要订阅并转发的 Topic。
+   *        A Topic to subscribe to and forward.
+   */
   struct TopicConfig
   {
-    const char* name;
-    const char* domain = "libxr_def_domain";
+    const char* name;                         ///< Topic 名称 Topic name
+    const char* domain = "libxr_def_domain";  ///< Topic 所在的 domain Domain of the Topic
 
+    /**
+     * @brief 使用默认 domain `libxr_def_domain` 构造。
+     *        Construct with the default domain `libxr_def_domain`.
+     *
+     * @param name Topic 名称。
+     *             Topic name.
+     */
     TopicConfig(const char* name) : name(name) {}
 
+    /**
+     * @brief 构造并指定 domain。
+     *        Construct with an explicit domain.
+     *
+     * @param name Topic 名称。
+     *             Topic name.
+     * @param domain Topic 所在的 domain。
+     *               Domain of the Topic.
+     */
     TopicConfig(const char* name, const char* domain) : name(name), domain(domain) {}
   };
 
+  /**
+   * @brief 构造 SharedTopicClient：创建槽位与队列，并为 topic_configs 中的每个 Topic
+   *        注册 callback。
+   *        Construct SharedTopicClient: create the slots and queues, and register a
+   *        callback on every Topic of topic_configs.
+   *
+   * @param uart 发送数据包的 UART，须有可写的 write port。
+   *             UART the packets are sent on; it must have a writable write port.
+   * @param slot_count 共享的待发槽位数量，须大于 0。
+   *                   Number of shared pending slots; must be greater than 0.
+   * @param topic_configs 需要订阅并转发的 Topic 列表，至少一项，Topic 须已存在。
+   *                      Topics to subscribe to and forward, at least one; they must
+   *                      already exist.
+   */
   SharedTopicClient(
       LibXR::UART& uart,
       uint32_t slot_count = 16,
