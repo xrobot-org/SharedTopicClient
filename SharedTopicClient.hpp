@@ -82,9 +82,10 @@ class SharedTopicClient
    *             UART the packets are sent on; it must have a writable write port.
    * @param slot_count 共享的待发槽位数量，须大于 0。
    *                   Number of shared pending slots; must be greater than 0.
-   * @param topic_configs 需要订阅并转发的 Topic 列表，至少一项，Topic 须已存在。
-   *                      Topics to subscribe to and forward, at least one; they must
-   *                      already exist.
+   * @param topic_configs 需要订阅并转发的 Topic 列表，至少一项；未找到的 Topic
+   *                      输出错误日志并被跳过。
+   *                      Topics to subscribe to and forward, at least one; a Topic that
+   *                      is not found is logged as an error and skipped.
    */
   SharedTopicClient(LibXR::UART& uart, uint32_t slot_count = 16,
                     std::initializer_list<TopicConfig> topic_configs =
@@ -105,7 +106,7 @@ class SharedTopicClient
       if (topic == nullptr)
       {
         XR_LOG_ERROR("Topic not found: %s/%s", config.domain, config.name);
-        ASSERT(false);
+        continue;
       }
       const size_t packet_size = topic->data_.payload_size + LibXR::Topic::PACK_BASE_SIZE;
       max_packet_size = LibXR::max(max_packet_size, packet_size);
@@ -132,7 +133,12 @@ class SharedTopicClient
     {
       auto domain = LibXR::Topic::Domain(config.domain);
       auto topic_handle = LibXR::Topic::Find(config.name, &domain);
-      ASSERT(topic_handle != nullptr);
+      if (topic_handle == nullptr)
+      {
+        // 未找到的 Topic 已在上一轮循环记录错误日志
+        // The missing Topic was already logged as an error in the first loop
+        continue;
+      }
       void (*func)(bool, CallbackInfo, const LibXR::Topic::RawMessageView&) =
           [](bool in_isr, CallbackInfo info, const LibXR::Topic::RawMessageView& message)
       { info.client->OnTopic(in_isr, info, message); };
