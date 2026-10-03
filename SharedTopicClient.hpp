@@ -188,14 +188,8 @@ class SharedTopicClient
     }
 
     auto& slot = packets_[packet.slot_index];
-    auto write_status = uart_->Write(
-        LibXR::ConstRawData{slot.buffer.addr_, packet.packet_size}, tx_op_, in_isr);
-    if (static_cast<int8_t>(write_status) < 0)
-    {
-      ReturnFreeSlot(packet.slot_index);
-      return;
-    }
-
+    uart_->Write(LibXR::ConstRawData{slot.buffer.addr_, packet.packet_size}, tx_op_,
+                 in_isr);
     ReturnFreeSlot(packet.slot_index);
   }
 
