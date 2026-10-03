@@ -83,9 +83,10 @@ class SharedTopicClient
    * @param slot_count 共享的待发槽位数量，须大于 0。
    *                   Number of shared pending slots; must be greater than 0.
    * @param topic_configs 需要订阅并转发的 Topic 列表，至少一项；未找到的 Topic
-   *                      输出错误日志并被跳过。
+   *                      输出错误日志并进入致命错误处理。
    *                      Topics to subscribe to and forward, at least one; a Topic that
-   *                      is not found is logged as an error and skipped.
+   *                      is not found is logged as an error and enters the fatal error
+   *                      handler.
    */
   SharedTopicClient(LibXR::UART& uart, uint32_t slot_count = 16,
                     std::initializer_list<TopicConfig> topic_configs =
@@ -106,7 +107,9 @@ class SharedTopicClient
       if (topic == nullptr)
       {
         XR_LOG_ERROR("Topic not found: %s/%s", config.domain, config.name);
-        continue;
+        // 配置错误：所有构建类型都进入致命错误处理
+        // Configuration error: every build type enters the fatal error handler
+        libxr_fatal_error(__FILE__, __LINE__, false);
       }
       const size_t packet_size = topic->data_.payload_size + LibXR::Topic::PACK_BASE_SIZE;
       max_packet_size = LibXR::max(max_packet_size, packet_size);
@@ -133,12 +136,9 @@ class SharedTopicClient
     {
       auto domain = LibXR::Topic::Domain(config.domain);
       auto topic_handle = LibXR::Topic::Find(config.name, &domain);
-      if (topic_handle == nullptr)
-      {
-        // 未找到的 Topic 已在上一轮循环记录错误日志
-        // The missing Topic was already logged as an error in the first loop
-        continue;
-      }
+      // 上一轮循环已确认每个 Topic 都存在
+      // The first loop has confirmed that every Topic exists
+      ASSERT(topic_handle != nullptr);
       void (*func)(bool, CallbackInfo, const LibXR::Topic::RawMessageView&) =
           [](bool in_isr, CallbackInfo info, const LibXR::Topic::RawMessageView& message)
       { info.client->OnTopic(in_isr, info, message); };

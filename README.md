@@ -6,14 +6,14 @@
 
 SharedTopicClient 订阅多个 Topic，把每次发布打包后通过 UART 发送，对端用 `SharedTopic` 解析并发布到对端的 domain。
 
-- 构造时，SharedTopicClient 在给定 domain 中查找每个 Topic 并注册 Topic callback。Topic 须已存在，未找到的 Topic 输出错误日志 `Topic not found` 并被跳过，其余 Topic 照常订阅。UART 须有可写的 write port，且最大的打包后长度（payload + `Topic::PACK_BASE_SIZE`）不超过 write port 的容量。
+- 构造时，SharedTopicClient 在给定 domain 中查找每个 Topic 并注册 Topic callback。Topic 须在构造 SharedTopicClient 之前创建，例如发布它的模块在配置中排在 SharedTopicClient 之前；未找到的 Topic 输出错误日志 `Topic not found`，随后进入 LibXR 的致命错误处理（debug 与 release 构建相同）。UART 须有可写的 write port，且最大的打包后长度（payload + `Topic::PACK_BASE_SIZE`）不超过 write port 的容量。
 - 发送由 Topic callback 和写完成回调驱动。所有 Topic 共用 `slot_count` 个固定 packet 槽位，每个槽位的字节数取订阅 Topic 中最大的打包后长度。空槽位和待发 packet 各用一个 `MPMCQueue` 管理；`slot_count = 1` 时队列按最小容量 2 构造，槽位数仍为 1。
 - Topic 发布时，callback 申请一个空槽位，用 `Topic::PackRaw()` 打包 payload 和 envelope timestamp，放入待发队列，然后推进发送。申请不到空槽位时丢弃这条新数据，该背压由所有 Topic 共用。
 - 每次推进把一个待发 packet 交给 UART `WritePort`，数据拷入写队列后立即归还槽位。`WritePort` 忙或写队列满时丢弃该 packet 并归还槽位；之后的写完成回调或 Topic callback 继续推进队列。发送的并发与互斥由 LibXR `WritePort` 负责。
 
 SharedTopicClient subscribes to several Topics, packs every publication and sends it over a UART; the peer parses the stream with `SharedTopic` and publishes it in its own domain.
 
-- Upon construction, SharedTopicClient looks up every Topic in its domain and registers a Topic callback on it. The Topics must already exist; a Topic that is not found is logged as the error `Topic not found` and skipped, and the remaining Topics are subscribed as usual. The UART must have a writable write port, and the largest packed size (payload + `Topic::PACK_BASE_SIZE`) must fit into the write port capacity.
+- Upon construction, SharedTopicClient looks up every Topic in its domain and registers a Topic callback on it. The Topics must be created before SharedTopicClient is constructed, for example by Modules placed before SharedTopicClient in the configuration; a Topic that is not found is logged as the error `Topic not found` and then enters the LibXR fatal error handler (the same in debug and release builds). The UART must have a writable write port, and the largest packed size (payload + `Topic::PACK_BASE_SIZE`) must fit into the write port capacity.
 - Transmission is driven by the Topic callbacks and the write-done callback. All Topics share `slot_count` fixed packet slots, each sized for the largest packed subscribed Topic. Free slots and ready packets are kept in two `MPMCQueue`s; with `slot_count = 1` the queues are built with the minimum capacity 2 and the slot count remains 1.
 - On each publication the callback takes a free slot, packs the payload and the envelope timestamp with `Topic::PackRaw()`, pushes the packet to the ready queue and kicks TX. If no slot is free the new packet is dropped; this back-pressure is shared by all Topics.
 - Each kick hands one ready packet to the UART `WritePort`, and the slot is returned as soon as the data is copied into the write queue. If the `WritePort` is busy or its queue is full, the packet is dropped and its slot returned; the next write-done callback or Topic callback continues advancing the queue. Concurrency and mutual exclusion of writes are handled by the LibXR `WritePort`.
