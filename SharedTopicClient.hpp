@@ -199,12 +199,11 @@ class SharedTopicClient
     ReturnFreeSlot(packet.slot_index);
   }
 
-  void OnWriteDone(bool in_isr, LibXR::ErrorCode status)
+  void OnWriteDone(bool in_isr, LibXR::ErrorCode)
   {
-    if (static_cast<int8_t>(status) < 0)
-    {
-      return;
-    }
+    // 写入成功或失败，已提交的槽位都已归还，继续发送队列中的下一个包
+    // Whether the write succeeded or failed, its slot has been returned; continue with
+    // the next queued packet
     TxService(in_isr);
   }
 
