@@ -13,13 +13,23 @@ depends: []
 
 #include "libxr_def.hpp"
 #include "message.hpp"
-#include "queue.hpp"
+#include "serialized_service.hpp"
+#include "slot_pool.hpp"
 #include "uart.hpp"
 
 /**
  * @brief 订阅多个 Topic，把每次发布打包后通过 UART 转发。
  *        Subscribes to several Topics, packs every publication and forwards it over a
  *        UART.
+ *
+ * 待发数据放在一个固定容量的槽池里：Topic 回调认领空槽、把数据打包进槽并发布，
+ * 发送端按发布序号取出、交给 UART 的写端口、再释放槽位；发送推进由
+ * `LibXR::SerializedService` 串行化，任意上下文都只有一个推进者。
+ *
+ * Pending data lives in one fixed-capacity slot pool: the Topic callback claims a free
+ * slot, packs into it and publishes it; the sender takes the slots in publish order,
+ * hands them to the UART write port and releases them. TX progress is serialized by
+ * `LibXR::SerializedService`, so exactly one context advances it at a time.
  */
 class SharedTopicClient
 {
@@ -28,17 +38,6 @@ class SharedTopicClient
   {
     SharedTopicClient* client;
     LibXR::Topic::TopicHandle topic;
-  };
-
-  struct PacketSlot
-  {
-    LibXR::RawData buffer;
-  };
-
-  struct ReadyPacket
-  {
-    uint32_t slot_index = 0;
-    size_t packet_size = 0;
   };
 
  public:
@@ -73,9 +72,9 @@ class SharedTopicClient
   };
 
   /**
-   * @brief 构造 SharedTopicClient：创建槽位与队列，并为 topic_configs 中的每个 Topic
+   * @brief 构造 SharedTopicClient：创建槽池，并为 topic_configs 中的每个 Topic
    *        注册 callback。
-   *        Construct SharedTopicClient: create the slots and queues, and register a
+   *        Construct SharedTopicClient: create the slot pool, and register a
    *        callback on every Topic of topic_configs.
    *
    * @param uart 发送数据包的 UART，须有可写的 write port。
@@ -91,7 +90,7 @@ class SharedTopicClient
   SharedTopicClient(LibXR::UART& uart, uint32_t slot_count = 16,
                     std::initializer_list<TopicConfig> topic_configs =
                         {"topic1", {"topic2", "libxr_def_domain"}})
-      : uart_(std::addressof(uart))
+      : uart_(std::addressof(uart)), slots_(slot_count)
   {
     ASSERT(uart_->write_port_ != nullptr);
     ASSERT(uart_->write_port_->Writable());
@@ -117,15 +116,11 @@ class SharedTopicClient
 
     ASSERT(max_packet_size <= uart_->write_port_->Capacity());
 
-    const size_t queue_capacity = LibXR::max(static_cast<size_t>(slot_count), size_t{2});
-    packets_ = new PacketSlot[slot_count];
-    free_slots_ = new LibXR::MPMCQueue<uint32_t>(queue_capacity);
-    ready_packets_ = new LibXR::MPMCQueue<ReadyPacket>(queue_capacity);
-    for (uint32_t i = 0; i < slot_count; i++)
-    {
-      packets_[i].buffer = LibXR::RawData(new uint8_t[max_packet_size], max_packet_size);
-      ASSERT(free_slots_->Push(i) == LibXR::ErrorCode::OK);
-    }
+    // 每个槽的字节数取订阅 Topic 中最大的打包后长度；数据按槽位下标索引同一块缓冲
+    // Each slot holds the largest packed subscribed Topic; slot data is indexed in one
+    // buffer by the slot index
+    max_packet_size_ = max_packet_size;
+    buffers_ = new uint8_t[static_cast<size_t>(slot_count) * max_packet_size];
 
     tx_callback_ = LibXR::Callback<LibXR::ErrorCode>::CreateGuarded(
         [](bool in_isr, SharedTopicClient* self, LibXR::ErrorCode status)
@@ -157,65 +152,79 @@ class SharedTopicClient
                const LibXR::Topic::RawMessageView& message)
   {
     const size_t packet_size = message.payload.size_ + LibXR::Topic::PACK_BASE_SIZE;
-    uint32_t slot_index = 0;
+    size_t slot_index = 0;
 
-    if (free_slots_->Pop(slot_index) != LibXR::ErrorCode::OK)
+    if (slots_.Acquire(slot_index) != LibXR::ErrorCode::OK)
     {
+      // 没有空槽位：丢弃这条新数据，背压由所有 Topic 共用
+      // No free slot: drop this publication; the back-pressure is shared by all Topics
       return;
     }
 
-    auto& slot = packets_[slot_index];
-    ASSERT(packet_size <= slot.buffer.size_);
+    uint8_t* buffer = buffers_ + slot_index * max_packet_size_;
+    ASSERT(packet_size <= max_packet_size_);
     if (LibXR::Topic(info.topic)
-            .PackRaw(message.payload, slot.buffer, message.timestamp) !=
-        LibXR::ErrorCode::OK)
+            .PackRaw(message.payload, LibXR::RawData(buffer, max_packet_size_),
+                     message.timestamp) != LibXR::ErrorCode::OK)
     {
-      ReturnFreeSlot(slot_index);
+      slots_.Release(slot_index);
       return;
     }
 
-    if (ready_packets_->Push(ReadyPacket{slot_index, packet_size}) !=
-        LibXR::ErrorCode::OK)
-    {
-      ReturnFreeSlot(slot_index);
-      return;
-    }
+    slots_.At(slot_index) = packet_size;
+    slots_.Publish(slot_index);
     KickTx(in_isr);
   }
 
-  void KickTx(bool in_isr) { tx_callback_.Run(in_isr, LibXR::ErrorCode::OK); }
-
-  void TxService(bool in_isr)
+  /**
+   * @brief 请求推进发送 / Request TX progress.
+   *
+   * 并发或重入调用只发布事件，由当前的消费者在自己的上下文里继续推进；取得执行权的
+   * 调用以自己的上下文执行 `ServiceTx`，因此 `Write` 的 `in_isr` 与之相同。
+   *
+   * Reentrant or concurrent calls only publish an event and the current consumer keeps
+   * advancing in its own context; the claimer runs `ServiceTx` with its own context, so
+   * the `in_isr` of `Write` matches it.
+   *
+   * @param in_isr 当前调用上下文 / Context of this call
+   */
+  void KickTx(bool in_isr)
   {
-    ReadyPacket packet;
-    if (ready_packets_->Pop(packet) != LibXR::ErrorCode::OK)
+    tx_service_.Invoke(1U, in_isr,
+                       [this](uint32_t, bool owner_in_isr) { ServiceTx(owner_in_isr); });
+  }
+
+  /**
+   * @brief 在唯一的消费者中取出一个待发数据包并发送 / Take one ready packet and send
+   *        it in the sole consumer.
+   *
+   * @param in_isr 取得执行权的上下文 / Context of the claimer
+   */
+  void ServiceTx(bool in_isr)
+  {
+    size_t slot_index = 0;
+    if (slots_.Take(slot_index) != LibXR::ErrorCode::OK)
     {
       return;
     }
 
-    auto& slot = packets_[packet.slot_index];
-    uart_->Write(LibXR::ConstRawData{slot.buffer.addr_, packet.packet_size}, tx_op_,
-                 in_isr);
-    ReturnFreeSlot(packet.slot_index);
+    const size_t packet_size = slots_.At(slot_index);
+    uart_->Write(
+        LibXR::ConstRawData{buffers_ + slot_index * max_packet_size_, packet_size},
+        tx_op_, in_isr);
+    // 数据已拷入 WritePort 的字节队列，槽位立即归还；Write 失败时这一包同样被丢弃
+    // The data is already copied into the write port queue, so the slot is returned
+    // right away; a failed Write drops this packet as well
+    slots_.Release(slot_index);
   }
 
-  void OnWriteDone(bool in_isr, LibXR::ErrorCode)
-  {
-    // 写入成功或失败，已提交的槽位都已归还，继续发送队列中的下一个包
-    // Whether the write succeeded or failed, its slot has been returned; continue with
-    // the next queued packet
-    TxService(in_isr);
-  }
-
-  void ReturnFreeSlot(uint32_t slot_index)
-  {
-    ASSERT(free_slots_->Push(slot_index) == LibXR::ErrorCode::OK);
-  }
+  void OnWriteDone(bool in_isr, LibXR::ErrorCode) { KickTx(in_isr); }
 
   LibXR::UART* uart_;
-  PacketSlot* packets_ = nullptr;
-  LibXR::MPMCQueue<uint32_t>* free_slots_ = nullptr;
-  LibXR::MPMCQueue<ReadyPacket>* ready_packets_ = nullptr;
+  LibXR::SlotPool<size_t> slots_;
+  uint8_t* buffers_ = nullptr;
+  size_t max_packet_size_ = 0;
   LibXR::Callback<LibXR::ErrorCode> tx_callback_;
   LibXR::WriteOperation tx_op_;
+  LibXR::SerializedService tx_service_;
 };
